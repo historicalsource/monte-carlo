@@ -1,0 +1,359 @@
+        .TITLE COIN68- COIN & CREDIT ACCRUER
+        .SBTTL *********************************
+        .SBTTL * PROGRAMER: ALBAUGH            *
+        .SBTTL *                               *
+        .SBTTL * CHECKER:                      *
+        .SBTTL *                               *
+        .SBTTL *********************************
+        .SBTTL EXPLANATION
+.RAD	=10			;SAVE CALLERS RADIX
+        .RADIX 16
+	.ENABL LC
+	.NLIST MC
+        .LIST MEB
+	.NLIST CND
+;COIN ROUTINE FOR 16-OPTION STANDARD AS PER MEMO
+;FROM STEVE BRISTOW DATED 9.27.77 OR 4-OPTION STANDARD
+;PER MEMO FROM FRANK BALLOUZ 4/20/78
+;
+;ENTRY POINT
+        .GLOBL COIN68
+;
+        .SBTTL DEFAULT ASSIGNMENTS
+;THESE DEFAULTS CONFIGURE FOR SKYDIVER HARDWARE
+        .LIST 
+	.IIF NDF,MECHS,MECHS=2		;2 MECHS STANDARD
+	.IIF NDF,MULTS,MULTS=0		;NO MULTIPLIERS STANDARD
+        .IIF NDF,MODES,MODES=4          ;FOUR COIN MODES STANDARD
+	.IIF EQ,MODES!MULTS,CMZP=0	;COIN-MODE IRRELEVANT IF MODES=0,MULTS=0
+        .IIF NDF,OFFSET,OFFSET=1        ;SWITCHES AND STATUS BYTES ONE-APART
+        .IIF NDF,COIN,COIN=0            ;COIN IS LOW-TRUE
+        .IIF NDF,CNTINT,CNTINT=1        ;COUNT INTERRUPTS (IN $INTCT)
+        .IIF NDF,SLAM,SLAM=1            ;SLAM IS HIGH-TRUE
+        .IIF NDF,CMZP,CMZP=1            ;COIN MODE IS IN ZERO-PAGE
+        .IIF NDF,COIN67,COIN67=0        ;COINS NOT IN D7,D6 OF SAME BYTE
+        .IIF NDF,PRST,PRST=30.          ;PRE-COIN SLAM KILLS COINS FOR 30 FRAMES
+        .IIF NDF,POST,POST=30.          ;POST-COIN SLAM KILLS COINS WITHIN 30 FRAMES
+	.IIF NDF,EMCTRS,EMCTRS=3	;3 EMCTRS STANDARD
+        .IF NE,CMZP
+        .MACRO GCM
+        LDAA	D,$CMODE            ;GET COIN MODE FROM ZERO-PAGE
+        .IIF NE,MULTS,	 ANDA I,MODES-1&0FF       ;STRIP MULTS
+        .ENDM
+        .ENDC				;CMZP CONDITIONAL
+        .NLIST 
+        .IF NE,MODES&<MODES-4>
+        .ERROR                  ;2 FLAVORS-0 OR 4 MODES
+        .ENDC
+	.IF NE,EMCTRS-3&EMCTRS
+	.ERROR		;3 EMCTRS OR NONE
+	.ENDC
+        .IIF GT,PRST-31.,PRST=31.
+        .IIF GT,POST-63.,POST=63.
+;EXTERNAL REFERENCES
+	.IF	NE,MODES!MULTS	;IF WE HAVE COIN-MODES OR MECH-MULTS
+        .GLOBL $CMODE                   ;INPUT COIN MODE
+	.ENDC
+        .GLOBL $COINA,$LAM              ;SWITCH LOCATIONS (COIN & SLAM)
+        .GLOBL $LMBIT                   ;MASK WITH 1 IN BIT WHERE SLAM SW. IS
+        .GLOBL $CNSTT,$PSTSL,$INTCT     ;INTERNAL LOCATIONS
+	.IF NE,EMCTRS
+	.GLOBL $CCTIM			;COIN-COUNTER-TIMERS (FOR E.M.COUNTERS)
+	.ENDC
+        .GLOBL $LMTIM,$CNCT             ;SLAM-TIMER, COINCOUNT
+	.IF	NE,MODES		;CREDIT NOT USED IF MODES=0
+        .GLOBL $$CRDT                   ;RESULT OF ALL THIS
+	.ENDC
+        .rept 0
+        The coin routine assumes the presence of the following .GLOBL variables:
+   1) $$CRDT:   base page byte initialized to 0 on restart.  This is where accrued  credit
+        is  kept.   Should  be  decremented  for each player-start.  Note that a DECREMENT
+        instruction must be used to insure  mutual  exclusion  between  the  main  program
+        accessing  $$CRDT  and  the  interrupt-driven coin routine accessing $$CRDT".  Not
+        used if MODES=0
+   2) $CMODE:   base page byte that contains the coin option  switches  in  its  low-order
+        nybble  (high true).  You must put it there.  this is not used if flag CMZP=0.  In
+        this case you must define a macro to get the coin mode in the lsb's  of  the  ACC,
+        clearing the msb's, not disturbing carry, SETTING/CLEARING Z-FLAG.
+   3) $CNSTT:   Two base page bytes ($CNSTT, $CNSTT+OFFSET) which should be initialized to
+        00 (the timers for coin detection).
+   4) $COINA:   Two locations containing coin switches in D7 Left mech  at  $COINA,  Right
+        mech  at  $COINA+OFFSET.   If  COIN67=1,  Switches  are  both in $COINA, D7-Right,
+        D6-Left.
+   6) $CNCT:    2 base page bytes ($CNCT, $CNCT+OFFSET) which must be initialized to  zero
+        on pwron - coin counters (only one is used if MODES = 0 or 4)
+   7) $PSTSL:   Pair of base page bytes  ($PSTSL,  $PSTSL+OFFSET)used  to  time  post-coin
+        slam.
+   8) $LAM:     Address of the SLAM switch.  the bit position inside $LAM is specified  by
+        $LMBIT (see below)
+   9) $LMTIM:   Base  page  byte  used  as  a  timer  for  pre-slam  protection.   May  be
+        initialized  to  FF  at  pwron  to  disallow  coin input for 4 seconds.  Coins are
+        disallowed for two frames anyway.
+   10) $INTCT:  Interrupt counter for  long  string-timer.   If  CNTINT=1,  this  will  be
+        incremented  (default  case).   If CNTINT=0, this should be equated to an existing
+        counter.
+   11) $LMBIT:  Mask used to select which bit in the slam switch  byte  should  be  tested
+        (used as I,$LMBIT).  NOT A LOCATION, JUST A VALUE!!
+Space requirements:
+                RAM: 9 bytes (8 if CMZP=0 or SHRCMD=1)
+                ROM: About 130 bytes
+The coin routine also assumes it will be called 4 times  a  frame,  where  one  frame=1/60
+second.   In  most  cases  this may be accomplished by making the coin routine part of the
+interrupt routine.
+SAMPLE BASE PAGE ALLOCATION:  (WHERE OFFSET=1)
+        $$CRDT: .BLKB 1
+        $CMODE: .BLKB 1         
+	$CCTIM:	.BLKB EMCTRS	;TIMERS
+        $LMTIM: .BLKB 1
+        $CNCT:  .BLKB 1
+        $PSTSL: .BLKB MECHS
+        $CNSTT  .BLKB MECHS
+        .ENDR
+        .IF EQ,MODES-4
+        .REPT 0
+THE COIN MODES ARE:
+  0:    FREE PLAY- $CNCT is zeroed, $$CRDT is not changed
+  1:    2 PLAYS PER COIN
+  2:    1 PLAY PER COIN
+  3:    2 COINS PER PLAY
+        .ENDR
+        .ENDC
+        .REPT 0
+                   *** COIN DETECTION ***
+Coin detection, courtesy of Mike Albaugh, uses two counters in one  byte  ($CNSTT).   This
+byte  is  used to remember the condition of the coin switch.  The upper counter (D7,D6,D5)
+runs when the coin is absent and is reset when the coin is  present.   The  lower  counter
+(D4-D0)  runs  when  the  coin is present and is reset when the coin is absent, unless the
+coin was present for 5 successive samples.  This "unless"  enables  $CNSTT  to  "remember"
+that a coin has been VALID-HIGH while waiting for VALID-LOW.
+Basically, a valid coin is defined as between 16 and 850 ms of coin present, preceded  and
+followed  by  33 ms of coin absent.  The 33 ms lows need not immediately precede or follow
+the high.  The lower five bits count  down  from  31  when  the  coin  is  present.   This
+countdown  is  fast  (once  per  interupt)  for the first five samples (31-26, about 16-20
+milliseconds) then slow (once per eight interrupts) for the remaining counts  (26-0, about
+850  ms).   The  count  then  stops  at zero.  This counter is reset if the coin goes away
+during the first five counts, I.E., the coin must be present for at least  16  ms.   After
+that  the coin must go away for eight counts to reset it.  This is because after the first
+five counts a coin is VALID HIGH and must not be reset until VALID LOW occurs  to  prevent
+mid-coin glitches from making a valid coin into 0 or 2 (or more) coins.
+
+The upper three bits count up from zero when the coin is absent.  The count  is  reset  if
+coin  is  ever  found  present.   When  the  count  finally wraps (8 samples, 33 ms).  The
+coin-present counter is checked.  A count from 27-31 (less than 16-20 ms) is too short.  A
+count of 0 (more than 850 ms) is too long.  Both of these cases are simply reset to 31.  A
+count of 1-26 is a (tentatively) valid coin.  The counter is again set to 31, but  another
+counter ($PSTSL) is started.
+
+$PSTSL is the POST-COIN-SLAM timer.  Initially  set  to  120,  it  counts  down  once  per
+interrupt  (4  times per frame) to give a nominal 1/2 second delay.  If the slam switch is
+seen during this time, $PSTSL is cleared, invalidating the coin.  The length of the  delay
+(in  frames)  is  defined by POST which defaults to 30.  It may be set as high as 63 (1.05
+seconds) by definition E.G.
+
+        POST=50         ;POST-SLAM=50 FRAMES
+
+SIMILARY A SLAM IS "REMEMBERED" FOR PRST frames (default=30, max=31) and no  coin  can  be
+"seen" during this time.
+
+Note that the proper initial  state  of  all  these  counters  etc  is  0,  therefore  the
+traditional power-on clear does the trick.  Since coins "transit" from $CNSTT to $PSTSL to
+$CNCT to $$CRDT, locations should be cleared in that order, I.E.   $$CRDT  should  be  the
+last location cleared. $CCTIM, if used, should also be cleared AFTER $PSTSL.
+        .ENDR
+	.SBTTL	CODE
+COIN68:	LDX	I,MECHS-1*OFFSET
+	.IF	EQ,COIN67
+	.IF	EQ,MECHS-3
+	LDAA	E,2*OFFSET+$COINA	;GET FIRST SWITCH WD
+	.IFF				;EQ, MECHS-3
+	LDAA	E,$COINA+OFFSET		;GET "INDEXED" SWITCH WORD
+	.ENDC			;EQ,MECHS-3
+	.IFF			;EQ,COIN67
+	LDAA	E,$COINA	;SWITCHES IN ONE WORD
+	.ENDC
+DETECT:	ASLA
+	.SBTTL	COIN-TEST ROUTINE
+;MARK 4 COIN DETECTION FOR THE 6800
+;ENTERED WITH COIN IN CARRY
+;ON EXIT
+;CARRY SET=VALID COIN DETECTED
+	LDAB	X,$CNSTT	;GET STATUS WD.
+	ANDB	I,31.		;ISOLATE COIN-ON DOWN-COUNTER
+	.IF	EQ,COIN
+	BCS	8$
+	.IFF
+	BCC	8$
+	.ENDC
+	BEQ	2$		;DON'T COUNT PAST 0 JUST CLEAR COIN-OFF CTR.
+	CMPB	I,26.		;FIRST 5 SAMPLES
+	BHI	1$		;YES, RUN FAST
+	.IF NE,COIN67
+	PSHA			;SAVE SWITCHES
+	.IFTF
+	LDAA	$INTCT
+	ANDA	I,3		;ONLY ONCE PER FRAME
+	.IFT
+	PULA			;RESTORE A (NO CHANGE T CC'S)
+	.ENDC			;NE,COIN67
+	BNE	2$
+1$:	DECB
+2$:	STAB	X,$CNSTT	;SAVE STATUS
+	LDAB	E,$LAM		;GET WD. WITH SLAM SWITCH
+	BITB	I,$LMBIT	;CHECK SWITCH
+	.IF	NE,SLAM
+	BNE	3$
+	.IFF
+	BEQ	3$		;SLAM! -SET TIMER
+	.ENDC
+	LDAB	D,$LMTIM	;ELSE CHECK TIMER
+	BEQ	5$		;IF ZERO, OK
+	DECB			;ELSE DECR. ONCE PER MECH. PER INTERRUPT
+	BRA	4$		;KEEP STATUS CLEAR
+3$:	LDAB	I,PRST*8	;SET TIMER FOR 120/8=15 FRAMES, 1/4 SEC.
+4$:	STAB	D,$LMTIM
+	CLR	X,$CNSTT
+	CLR	X,$PSTSL
+5$:	CLC			;DEFAULT TO "NO VALID COIN"
+6$:	LDAB	X,$PSTSL	;CHECK POST-SLAM COUNTER
+	BEQ	12$		;ALREADY ZERO, RETURN
+	DEC	X,$PSTSL	;ELSE COUNT DOWN
+	BNE	12$		;NOT DONE YET, RETURN
+	SEC			;ELSE SET "VALID COIN"
+	BRA	12$
+8$:	CMPB	I,26.		;HAS COIN BEEN ON 5 TIMES YET
+	BLS	10$		;YES, PROCEED
+9$:	LDAB	I,31.		;ELSE SET TO STARTING COUNT
+	BRA	2$
+10$:	LDAB	X,$CNSTT	;GET BACK STATUS
+	ADDB	I,32.		;BUMP COIN-GONE UP-CTR
+	BCC	2$		;BRANCH ON NO WRAP
+	BEQ	9$		;JUST RESET IF "STRING-TIMER" SET
+;ABOVE LINE PREVENTS SPURIOUS COIN AFTER POWER ON CLEAR, ALSO
+;WILL IGNORE ANY COIN PRESENT FOR 32 COUNTS (8 FRAMES)
+	CMPB	I,26.		;COIN HAS BEEN GONE 2 FRAMES, HOW LONG WAS IT
+	BGT	9$		;NOT LONG ENOUGH, RESET DOWN-CTR & DO SLAM-STUFF
+	LDAB	I,31.		;RESET ANYWAY
+	STAB	X,$CNSTT
+;AT THIS POINT, WE THINK WE HAVE A VALID COIN.  HOWEVER, TO BE TRULY
+;WORTHY IT MUST WAIT FOR 1/2 SECOND IN THE POST SLAM TIMER.  IF THE 1/2
+;SECOND PASSES WITHOUT A SLAM SWITCH CLOSURE, WE WILL (GRUDGINGLY) ACCEPT
+;THE COIN.  THE TEST FOR PREVIOUS OCCUPANCY OF THE TIMER (NEXT 3 LINES) MAY
+;BE OMITTED IF YOU HAVE FAITH IN MR. HOWIE DELMAN'S STATEMENT THAT NO-ONE
+;CAN PUT TWO COINS IN THE SAME MECH IN LESS THAN 1/2 SECOND, OR IF YOU WOULD
+;PREFER TO PUNISH, RATHER THAN REWARD, THIS BEHAVIOR
+	TST	X,$PSTSL	;IS TIMER OCCUPIED (CLEARS CARRY)
+	BEQ	11$		;NO, VACANT
+	SEC			;ACCEPT PREVIOUS OCCUPANT NOW
+11$:	LDAB	I,POST*4	;INSTALL NEW TENTATIVE COIN
+	STAB	X,$PSTSL
+12$:	BCC	16$		;SKIP IF NO NEW COIN
+	.IF	EQ,EMCTRS-MECHS
+	INC	X,$CCTIM	;QUEUE A COUNTER PULSE
+	.ENDC
+	.IF	EQ,MULTS
+	INC	$CNCT
+	.IFF			;IF WE DO HAVE MULTS
+;NOW FALL THOUGHT TO MECH-MULTIPLIERS
+	.PAGE
+	.SBTTL MECH-MULTIPLIERS
+	CLRB
+	CPX	I,0		;LEFT MECH?
+	BEQ	14$		;YES, JUST ADD ONE
+	LDAB	D,$CMODE
+	CPX	I,OFFSET	;CENTER MECH?
+	BEQ	13$		;YES, ONE OR TWO
+	ANDB	I,0C		;ELSE ISOLATE RIGHT MULTS
+	BEQ	14$		;0->1
+	LSRB
+	LSRB
+	ADDB	I,3		;1,2,3 -> 4,5,6
+	BRA	15$
+13$:	ANDB	I,10		;CHECK CENTER OPTION
+	BEQ	14$		;IF 0, ADD 1
+	LDAB	I,1		;ELSE ADD 1+1
+14$:	INCB
+15$:	ADDB	D,$CNCT
+	STAB	D,$CNCT		;UPDATE COIN COUNT
+	.IFTF
+16$:
+	.IIF	EQ,COIN67,	 LDAA E,$COINA
+	.REPT	OFFSET
+	DEX
+	.ENDR
+	.IFT
+	BEQ	DETECT
+	.IFF			;EQ,MULTS
+	BEQ	17$
+	.ENDC			;EQ,MULTS
+	.IF	EQ,MECHS-3
+	.IIF	EQ,COIN67, LDAA E,$COINA+OFFSET
+	CPX	I,OFFSET
+	BNE	18$
+17$:	JMP	DETECT
+18$:
+	.ENDC		;EQ,MECHS-3
+	.IF	EQ,MODES-4
+	.SBTTL	COINS TO CREDITS(4)
+CONVRT:	GCM
+	BEQ	1$		;IF FREE-PLAY, CLEAR COINCOUNT
+	LSRA
+	TAB
+	ADCA	I,0
+	NEGA			;FORM -(PRICE) IN ACCA
+	ADDA	$CNCT		;"SUBTRACT" PRICE FROM COINCOUNT
+	BCC	2$		;BRANCH ON BORROW
+	EORB	I,1
+	ADCB	$$CRDT		;BUMP CREDIT BY ONE OR TWO
+	STAB	$$CRDT
+1$:	STAA	$CNCT
+2$:	.IF	NE,CNTINT
+	INC	$INTCT		;COUNT INTERUPTS
+	.ENDC			;NE,CNTINT
+	.ENDC			;MODES=4
+	.IF	NE,EMCTRS
+	.SBTTL	ELECTR-MECH COUNTERS
+	.MACRO	LDAAX,FRED
+	.DSABL	M68
+	.BYTE	0A6
+	.WORD	FRED
+	.=.-1
+	.ENABL	M68
+	.ENDM
+	.MACRO	STAAX,FRED
+	.DSABL	M68
+	.BYTE	0A7
+	.WORD	FRED
+	.=.-1
+	.ENABL	M68
+	.ENDM
+COUNT:	LDX 	I,OFFSET*MECHS
+	CLRB			;B=0, NO TIMERS RUNNING
+1$:	LDAAX	$CCTIM-1	;GET A COUNTER-TIMER
+	BITA	I,0E0		;IS IT RUNNING?
+	BEQ	2$		;NO, SKIP
+	LDAB	$INTCT		;ELSE SEE IF WE SHOULD TICK
+	ANDB	I,3		;ONLY EVERY 16 MS
+	BNE	2$
+	SUBA	I,20		;BUMP TIMER
+	STAAX	$CCTIM-1	
+	INCB			;SET "BUSY" FLAG
+2$:	DEX
+	BNE	1$		;LOOP FOR OTHERS
+	TSTB			;ARE ANY RUNNING
+	BNE	5$		;YES, DONT START MORE
+	LDX	I,OFFSET*MECHS
+3$:	LDAAX	$CCTIM-1	;ANY COINS FOR THIS ONE?
+	BEQ	4$		;NO SKIP
+	SUBA	I,21		;ELSE DEC COINS (5 LSB), START TIMER (3 MSB)
+	STAAX	$CCTIM-1
+	BRA	5$
+4$:	DEX
+	BNE	3$
+5$:
+	.ENDC			;NE, EMCTRS
+	RTS
+	.RADIX .RAD
+	.END
+	
+	
+                                                                                                                                                                                                                                                                                                                                                               
